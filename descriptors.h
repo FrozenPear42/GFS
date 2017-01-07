@@ -11,7 +11,11 @@
 
 #define FS_ENDPOINT 0xFFFFFFFF
 
-#define FS_DATA_OFFSET sizeof(FS_info) + sizeof(FS_allocation_table) + sizeof(FS_directory_table)
+
+#define FS_INFO_OFFSET 0
+#define FS_ALLOCATION_OFFSET sizeof(FS_info)
+#define FS_DIRECTORY_OFFSET FS_ALLOCATION_OFFSET + sizeof(FS_allocation_table)
+#define FS_DATA_OFFSET FS_DIRECTORY_OFFSET + sizeof(FS_directory_table)
 
 typedef struct {
     uint8_t magic[3];   //GFS
