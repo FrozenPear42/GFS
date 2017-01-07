@@ -5,6 +5,12 @@
 #define FS_ALLOC_UNITS 128
 #define FS_DIRECTORY_FILES 16
 
+#define FS_FREE 0
+#define FS_UNUSED 1
+#define FS_OCCUPIED 2
+
+#define FS_ENDPOINT 0xFFFFFFFF
+
 #define FS_DATA_OFFSET sizeof(FS_info) + sizeof(FS_allocation_table) + sizeof(FS_directory_table)
 
 typedef struct {
@@ -23,6 +29,7 @@ typedef struct {
 
 typedef struct {
     FS_allocation_unit units[FS_ALLOC_UNITS];
+    uint32_t unused_units;
     uint32_t offset_next;
 } FS_allocation_table;
 
