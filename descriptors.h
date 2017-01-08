@@ -5,23 +5,29 @@
 #define FS_ALLOC_UNITS 128
 #define FS_DIRECTORY_FILES 16
 
-#define FS_FREE 0
-#define FS_UNUSED 1
-#define FS_OCCUPIED 2
+#define FS_FREE 0x01
+#define FS_UNUSED 0x02
+#define FS_OCCUPIED 0x04
+#define FS_SYSTEM 0x08
 
 #define FS_ENDPOINT 0xFFFFFFFF
-
 
 #define FS_INFO_OFFSET 0
 #define FS_ALLOCATION_OFFSET sizeof(FS_info)
 #define FS_DIRECTORY_OFFSET FS_ALLOCATION_OFFSET + sizeof(FS_allocation_table)
 #define FS_DATA_OFFSET FS_DIRECTORY_OFFSET + sizeof(FS_directory_table)
 
+//TODO: MOVE?
+#define FS_DIR_FROM_FILE 0x01
+#define FS_DIR_TO_FILE 0x02
+
 typedef struct {
     uint8_t magic[3];   //GFS
     uint8_t version[5]; //x.x.x
     uint32_t size;      //size in bytes
     uint32_t free;      //free space
+    uint32_t allocation_tables;
+    uint32_t directory_tables;
 } FS_info;
 
 typedef struct {

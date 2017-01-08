@@ -16,26 +16,25 @@
 #define ST_NOT_FOUND -4
 #define ST_NOT_ENOUGH_SPACE -5
 
-int createFS(FILE* pFile, uint32_t pBytes);
+int createFS(FILE* pDrive, uint32_t pBytes);
 
-int status(FILE* pFile);
-
-int tree(FILE* pFile);
-
-int addFile(FILE* pVirtualDrive, FILE* pFile, char* pFileName);
-
-void blockCopyFromFile(FILE* pDrive, FILE* pFile, FS_allocation_unit* pUnit, uint32_t pSize);
+int addFile(FILE* pDrive, FILE* pFile, char* pFilename);
 
 int getFile(FILE* pDrive, FILE* pDest, char* pFilename);
 
-int findFile(FS_file_entry* pFile, uint32_t* pIndex, FS_directory_table* pDirectory, char* pFilename);
-
-void blockCopyToFile(FILE* pDrive, FILE* pFile, FS_allocation_unit* pUnit, uint32_t pSize);
-
 int removeFile(FILE* pDrive, char* pFile);
 
+int status(FILE* pDrive);
+
+int tree(FILE* pDrive);
+
+int findFile(FS_file_entry* pFile, uint32_t* pIndex, FS_directory_table* pDirectory, char* pFilename);
+
+void blockCopy(FILE* pDrive, FILE* pFile, FS_allocation_unit* pUnit, uint32_t pSize, uint8_t pDirection) ;
+
 int main(int argc, char** argv) {
-    char* drive;
+    FILE* virtualDrive = NULL;
+    int result = 0;
 
 
     if (argc < 2) {
@@ -44,9 +43,6 @@ int main(int argc, char** argv) {
         printf("are allowed\n");
         return 1;
     }
-
-    if (argc >= 3)
-        drive = argv[2];
 
     if (!strcmp(argv[1], "version")) {
         printf("FileSystem version "FS_VERSION"\n");
@@ -57,7 +53,6 @@ int main(int argc, char** argv) {
     if (!strcmp(argv[1], "create")) {
         char* filename;
         int bytes;
-        FILE* virtualDrive;
         if (argc < 3) {
             printf("Provide correct arguments:\n");
             printf("FS create <size in bytes> <filename>\n");
@@ -74,12 +69,11 @@ int main(int argc, char** argv) {
             printf("Could not open file!\n");
             return 1;
         }
-        return createFS(virtualDrive, (uint32_t) bytes);
+        result = createFS(virtualDrive, (uint32_t) bytes);
     }
 
     if (!strcmp(argv[1], "status")) {
         char* filename;
-        FILE* virtualDrive;
         if (argc < 2) {
             printf("Provide correct arguments:\n");
             printf("FS status <filename>\n");
@@ -91,12 +85,11 @@ int main(int argc, char** argv) {
             printf("Could not open file!\n");
             return 1;
         }
-        return status(virtualDrive);
+        result = status(virtualDrive);
     }
 
     if (!strcmp(argv[1], "tree")) {
         char* filename;
-        FILE* virtualDrive;
         if (argc < 2) {
             printf("Provide correct arguments:\n");
             printf("FS tree <filename>\n");
@@ -108,13 +101,12 @@ int main(int argc, char** argv) {
             printf("Could not open file!\n");
             return 1;
         }
-        return tree(virtualDrive);
+        result = tree(virtualDrive);
     }
 
     if (!strcmp(argv[1], "add")) {
         char* virtname;
         char* filename;
-        FILE* virtualDrive;
         FILE* file;
         if (argc < 3) {
             printf("Provide correct arguments:\n");
@@ -130,14 +122,13 @@ int main(int argc, char** argv) {
             printf("Could not open file!\n");
             return 1;
         }
-        return addFile(virtualDrive, file, filename);
+        result = addFile(virtualDrive, file, filename);
     }
 
     if (!strcmp(argv[1], "get")) {
         char* virtname;
         char* destname;
         char* filename;
-        FILE* virtualDrive;
         FILE* dest;
         if (argc < 5) {
             printf("Provide correct arguments:\n");
@@ -155,13 +146,12 @@ int main(int argc, char** argv) {
             printf("Could not open file!\n");
             return 1;
         }
-        return getFile(virtualDrive, dest, filename);
+        result = getFile(virtualDrive, dest, filename);
     }
 
     if (!strcmp(argv[1], "remove")) {
         char* virtname;
         char* filename;
-        FILE* virtualDrive;
         if (argc < 4) {
             printf("Provide correct arguments:\n");
             printf("FS get <drive> <filename>\n");
@@ -176,57 +166,62 @@ int main(int argc, char** argv) {
             printf("Could not open file!\n");
             return 1;
         }
-        return removeFile(virtualDrive, filename);
+        result = removeFile(virtualDrive, filename);
     }
 
-    return 0;
+    fclose(virtualDrive);
+    return result;
 }
 
-int createFS(FILE* pFile, uint32_t pBytes) {
+int createFS(FILE* pDrive, uint32_t pBytes) {
     FS_info header;
-    FS_directory_table table;
-    FS_allocation_table alloc;
+    FS_directory_table directoryTable;
+    FS_allocation_table allocationTable;
+
     uint8_t dummy = 0;
+
     header.magic[0] = 'G';
     header.magic[1] = 'F';
     header.magic[2] = 'S';
-    strncpy(header.version, FS_VERSION, 5);
+    strncpy((char*) header.version, FS_VERSION, 5);
     header.size = pBytes;
     header.free = pBytes;
-    alloc.offset_next = 0;
-    alloc.unused_units = FS_ALLOC_UNITS - 1;
-    table.files_flags = 0;
+    header.allocation_tables = 1;
+    header.directory_tables = 1;
 
+    allocationTable.offset_next = FS_ENDPOINT;
+    allocationTable.unused_units = FS_ALLOC_UNITS - 1;
+    allocationTable.units[0].type = FS_FREE;
+    allocationTable.units[0].offset = 0;
+    allocationTable.units[0].size = pBytes;
+    allocationTable.units[0].next_block = FS_ENDPOINT;
     for (uint32_t i = 1; i < FS_ALLOC_UNITS; ++i)
-        alloc.units[i].type = FS_UNUSED;
-    alloc.units[0].type = FS_FREE;
-    alloc.units[0].offset = 0;
-    alloc.units[0].size = pBytes;
-    alloc.units[0].next_block = FS_ENDPOINT;
+        allocationTable.units[i].type = FS_UNUSED;
 
-    fwrite(&header, sizeof(header), 1, pFile);
-    fwrite(&alloc, sizeof(alloc), 1, pFile);
-    fwrite(&table, sizeof(table), 1, pFile);
+    directoryTable.files_flags = 0;
+    directoryTable.offset_next = FS_ENDPOINT;
+
+    fwrite(&header, sizeof(header), 1, pDrive);
+    fwrite(&allocationTable, sizeof(allocationTable), 1, pDrive);
+    fwrite(&directoryTable, sizeof(directoryTable), 1, pDrive);
     for (uint32_t i = 0; i < pBytes; i++)
-        fwrite(&dummy, sizeof(dummy), 1, pFile);
-    fclose(pFile);
+        fwrite(&dummy, sizeof(dummy), 1, pDrive);
     return ST_OK;
 }
 
-int addFile(FILE* pVirtualDrive, FILE* pFile, char* pFileName) {
+int addFile(FILE* pDrive, FILE* pFile, char* pFilename) {
     FS_info header;
-    FS_directory_table table;
-    FS_allocation_table alloc;
-    FS_file_entry desc;
+    FS_directory_table directoryTable;
+    FS_allocation_table allocationTable;
+    FS_file_entry fileEntry;
     uint32_t size;
 
-    fread(&header, sizeof(FS_info), 1, pVirtualDrive);
-    fread(&alloc, sizeof(FS_allocation_table), 1, pVirtualDrive);
-    fread(&table, sizeof(FS_directory_table), 1, pVirtualDrive);
+    fread(&header, sizeof(FS_info), 1, pDrive);
+    fread(&allocationTable, sizeof(FS_allocation_table), 1, pDrive);
+    fread(&directoryTable, sizeof(FS_directory_table), 1, pDrive);
 
     if (memcmp(header.magic, "GFS", 3)) {
         fclose(pFile);
-        fclose(pVirtualDrive);
         return ST_NOT_VALID_FILE;
     }
 
@@ -236,64 +231,63 @@ int addFile(FILE* pVirtualDrive, FILE* pFile, char* pFileName) {
 
     if (header.free < size) {
         fclose(pFile);
-        fclose(pVirtualDrive);
+        fclose(pDrive);
         printf("Not enough space!\n");
         printf("Free: %d\n", header.free);
         printf("Required: %d\n", size);
         return ST_NOT_ENOUGH_SPACE;
     }
 
-    if (findFile(NULL, NULL, &table, pFileName) == ST_OK) {
+    if (findFile(NULL, NULL, &directoryTable, pFilename) == ST_OK) {
         fclose(pFile);
-        fclose(pVirtualDrive);
-        printf("File with name: %s already exists!\n", pFileName);
+        printf("File with name: %s already exists!\n", pFilename);
         return ST_EXISTS;
     }
 
 
-    desc.size = size;
-    strcpy(desc.name, pFileName);
+    fileEntry.size = size;
+    strcpy(fileEntry.name, pFilename);
 
-    desc.exists = 1;
+    fileEntry.exists = 1;
 
-    if (!table.files_flags) {
+    if (!directoryTable.files_flags) {
         //TODO: ALLOCATE DIRECTORY TABLE
     }
 
     //CHECK IF SUFFICIENT TABLE, ALLOC, and copy
     uint32_t last_block = FS_ENDPOINT;
     for (uint32_t idx = 0; idx < FS_ALLOC_UNITS; ++idx) {
-        if (alloc.units[idx].type == FS_FREE) {
+        if (allocationTable.units[idx].type == FS_FREE) {
             // LINK TO LAST BLOCK
             if (last_block != FS_ENDPOINT)
-                alloc.units[last_block].next_block = idx;
+                allocationTable.units[last_block].next_block = idx;
             else
-                desc.block = idx;
+                fileEntry.block = idx;
 
-            if (alloc.units[idx].size > size) {
-                blockCopyFromFile(pVirtualDrive, pFile, &alloc.units[idx], size);
+            if (allocationTable.units[idx].size > size) {
+                blockCopy(pDrive, pFile, &allocationTable.units[idx], size, FS_DIR_FROM_FILE);
 
-                if (alloc.unused_units == 0) {
+                if (allocationTable.unused_units == 0) {
                     //TODO: ALLOC NEW TABLE
                 }
                 // FIND NEW BLOCK
                 uint32_t unused_block = 0;
                 for (; unused_block < FS_ALLOC_UNITS; ++unused_block)
-                    if (alloc.units[unused_block].type == FS_UNUSED) break;
+                    if (allocationTable.units[unused_block].type == FS_UNUSED) break;
                 // SET DESCRIPTORS
-                alloc.units[unused_block].type = FS_FREE;
-                alloc.units[unused_block].size = alloc.units[idx].size - size;
-                alloc.units[unused_block].offset = alloc.units[idx].offset + size;
-                alloc.units[idx].size = size;
-                alloc.units[idx].type = FS_OCCUPIED;
-                alloc.units[idx].next_block = FS_ENDPOINT;
-                alloc.unused_units -= 1;
+                allocationTable.units[unused_block].type = FS_FREE;
+                allocationTable.units[unused_block].size = allocationTable.units[idx].size - size;
+                allocationTable.units[unused_block].offset = allocationTable.units[idx].offset + size;
+                allocationTable.units[idx].size = size;
+                allocationTable.units[idx].type = FS_OCCUPIED;
+                allocationTable.units[idx].next_block = FS_ENDPOINT;
+                allocationTable.unused_units -= 1;
                 break;
-            } else if (alloc.units[idx].size <= size) {
-                blockCopyFromFile(pVirtualDrive, pFile, &alloc.units[idx], alloc.units[idx].size);
-                alloc.units[idx].type = FS_OCCUPIED;
-                alloc.units[idx].next_block = FS_ENDPOINT;
-                size -= alloc.units[idx].size;
+            } else if (allocationTable.units[idx].size <= size) {
+                blockCopy(pDrive, pFile, &allocationTable.units[idx], allocationTable.units[idx].size, FS_DIR_FROM_FILE);
+                allocationTable.units[idx].type = FS_OCCUPIED;
+                allocationTable.units[idx].next_block = FS_ENDPOINT;
+                size -= allocationTable.units[idx].size;
                 last_block = idx;
                 if (size == 0)
                     break;
@@ -303,18 +297,17 @@ int addFile(FILE* pVirtualDrive, FILE* pFile, char* pFileName) {
 
     uint32_t i = 0;
     for (; i < FS_DIRECTORY_FILES; ++i)
-        if (!((table.files_flags >> i) & 1)) break;
-    table.files[i] = desc;
-    table.files_flags |= (1 << i);
+        if (!((directoryTable.files_flags >> i) & 1)) break;
+    directoryTable.files[i] = fileEntry;
+    directoryTable.files_flags |= (1 << i);
     header.free -= size;
 
-    fseek(pVirtualDrive, 0, SEEK_SET);
-    fwrite(&header, sizeof(FS_info), 1, pVirtualDrive);
-    fwrite(&alloc, sizeof(FS_allocation_table), 1, pVirtualDrive);
-    fwrite(&table, sizeof(FS_directory_table), 1, pVirtualDrive);
+    fseek(pDrive, 0, SEEK_SET);
+    fwrite(&header, sizeof(FS_info), 1, pDrive);
+    fwrite(&allocationTable, sizeof(FS_allocation_table), 1, pDrive);
+    fwrite(&directoryTable, sizeof(FS_directory_table), 1, pDrive);
 
     fclose(pFile);
-    fclose(pVirtualDrive);
     return ST_OK;
 }
 
@@ -331,24 +324,21 @@ int getFile(FILE* pDrive, FILE* pDest, char* pFilename) {
 
     if (memcmp(header.magic, "GFS", 3)) {
         fclose(pDest);
-        fclose(pDrive);
         return ST_NOT_VALID_FILE;
     }
 
     if (findFile(&file, NULL, &table, pFilename)) {
         fclose(pDest);
-        fclose(pDrive);
         return ST_NOT_FOUND;
     }
 
     block = file.block;
     while (block != FS_ENDPOINT) {
-        blockCopyToFile(pDrive, pDest, &alloc.units[block], alloc.units[block].size);
+        blockCopy(pDrive, pDest, &alloc.units[block], alloc.units[block].size, FS_DIR_TO_FILE);
         block = alloc.units[block].next_block;
     }
 
     fclose(pDest);
-    fclose(pDrive);
     return ST_OK;
 }
 
@@ -364,20 +354,15 @@ int removeFile(FILE* pDrive, char* pFile) {
     fread(&alloc, sizeof(FS_allocation_table), 1, pDrive);
     fread(&table, sizeof(FS_directory_table), 1, pDrive);
 
-    if (memcmp(header.magic, "GFS", 3)) {
-        fclose(pDrive);
+    if (memcmp(header.magic, "GFS", 3))
         return ST_NOT_VALID_FILE;
-    }
 
-    if (findFile(&file, &file_idx, &table, pFile)) {
-        fclose(pDrive);
+    if (findFile(&file, &file_idx, &table, pFile))
         return ST_NOT_FOUND;
-    }
 
     block = file.block;
     while (block != FS_ENDPOINT) {
         alloc.units[block].type = FS_FREE;
-        //TODO: FIND ADJACENT BOCKS
         uint32_t cnt = 0;
         for (uint32_t i = 0; i < FS_ALLOC_UNITS && cnt != 2; ++i) {
             //left block
@@ -410,63 +395,76 @@ int removeFile(FILE* pDrive, char* pFile) {
     fwrite(&alloc, sizeof(FS_allocation_table), 1, pDrive);
     fwrite(&table, sizeof(FS_directory_table), 1, pDrive);
 
-    fclose(pDrive);
     return ST_OK;
 }
 
 
-int tree(FILE* pFile) {
+int tree(FILE* pDrive) {
     FS_info header;
-    FS_directory_table table;
+    FS_directory_table directoryTable;
 
-    fread(&header, sizeof(FS_info), 1, pFile);
+    fread(&header, sizeof(FS_info), 1, pDrive);
     if (memcmp(header.magic, "GFS", 3)) {
-        fclose(pFile);
+        fclose(pDrive);
         return ST_NOT_VALID_FILE;
     }
-    fseek(pFile, sizeof(FS_allocation_table), SEEK_CUR);
-    fread(&table, sizeof(FS_directory_table), 1, pFile);
+    fseek(pDrive, sizeof(FS_allocation_table), SEEK_CUR);
+    fread(&directoryTable, sizeof(FS_directory_table), 1, pDrive);
     printf("Files: \n");
     for (uint32_t i = 0; i < FS_DIRECTORY_FILES; ++i) {
-        if ((table.files_flags >> i) & 1) {
-            printf("%s \t %d bytes\n", table.files[i].name, table.files[i].size);
+        if ((directoryTable.files_flags >> i) & 1) {
+            printf("%s \t %d bytes\n", directoryTable.files[i].name, directoryTable.files[i].size);
         }
     }
     return ST_OK;
 }
 
-int status(FILE* pFile) {
+int status(FILE* pDrive) {
     FS_info header;
     FS_directory_table table;
     FS_allocation_table alloc;
     uint8_t version[6];
-    fread(&header, sizeof(FS_info), 1, pFile);
+    fread(&header, sizeof(FS_info), 1, pDrive);
     if (memcmp(header.magic, "GFS", 3)) {
-        fclose(pFile);
+        fclose(pDrive);
         return ST_NOT_VALID_FILE;
     }
     memcpy(version, header.version, 5);
     version[5] = 0;
 
     printf("FileSystem\n");
-    printf("Version: %s\nAPI Version: %s\nSize: %d\nFree: %d\n", version, FS_VERSION, header.size, header.free);
-    fread(&alloc, sizeof(FS_allocation_table), 1, pFile);
-    fread(&table, sizeof(FS_directory_table), 1, pFile);
+    printf("API Version: %s\n", FS_VERSION);
+    fread(&alloc, sizeof(FS_allocation_table), 1, pDrive);
+    fread(&table, sizeof(FS_directory_table), 1, pDrive);
 
-    printf("INFO SECTION(OFF: 0x%x)\n", (uint32_t)(FS_INFO_OFFSET));
-    printf("ALLOCATION SECTION(OFF: 0x%x)\n", (uint32_t)(FS_ALLOCATION_OFFSET));
-    printf("DIRECTORY SECTION(OFF: 0x%x)\n", (uint32_t)(FS_DIRECTORY_OFFSET));
+    printf("\nINFO SECTION(OFF: 0x%02x)\n", (uint32_t) (FS_INFO_OFFSET));
+    printf("VERSION: %s\nSIZE: %d\nFREE: %d\n", version, header.size, header.free);
 
-    printf("\nDATA SECTION(OFF: 0x%x):\n", (uint32_t)(FS_DATA_OFFSET));
+    printf("\nALLOCATION SECTION(OFF: 0x%02x)\n", (uint32_t) (FS_ALLOCATION_OFFSET));
+    printf("UNITS: %d\tUNUSED_UNITS: %d\tNEXT: %d\n", FS_ALLOC_UNITS, alloc.unused_units, alloc.offset_next);
+
+    printf("\nDIRECTORY SECTION(OFF: 0x%02x)\n", (uint32_t) (FS_DIRECTORY_OFFSET));
+    printf("FLAGS: 0x%02x\tNEXT: %d\n", table.files_flags, table.offset_next);
+    for (uint32_t i = 0; i < FS_DIRECTORY_FILES; ++i) {
+        if ((table.files_flags >> i) & 1)
+            printf("ID: %d\tNAME: %-32s\tSIZE: %d\tBLOCK: %d\n", i, table.files[i].name, table.files[i].size,
+                   table.files[i].block);
+    }
+
+
+    printf("\nDATA SECTION(OFF: 0x%02x):\n", (uint32_t) (FS_DATA_OFFSET));
     for (uint32_t i = 0; i < FS_ALLOC_UNITS; ++i) {
-        if (alloc.units[i].type == FS_FREE) {
-            printf("FREE BLOCK [%2d, %2d]\tOFFSET: 0x%x\tSIZE: %d\n", 0, i, alloc.units[i].offset, alloc.units[i].size);
-        } else if (alloc.units[i].type == FS_OCCUPIED) {
-            printf("USED BLOCK [%2d, %2d]\tOFFSET: 0x%x\tSIZE: %d\tNEXT: %d\n", 0, i, alloc.units[i].offset,
+        if (alloc.units[i].type & FS_SYSTEM) {
+            printf("SYS  BLOCK [%2d, %2d]\tOFFSET: 0x%02x\tSIZE: %d\n", 0, i, alloc.units[i].offset,
+                   alloc.units[i].size);
+        } else if (alloc.units[i].type & FS_FREE) {
+            printf("FREE BLOCK [%2d, %2d]\tOFFSET: 0x%02x\tSIZE: %d\n", 0, i, alloc.units[i].offset,
+                   alloc.units[i].size);
+        } else if (alloc.units[i].type & FS_OCCUPIED) {
+            printf("USED BLOCK [%2d, %2d]\tOFFSET: 0x%02x\tSIZE: %d\tNEXT: %d\n", 0, i, alloc.units[i].offset,
                    alloc.units[i].size, alloc.units[i].next_block);
         }
     }
-    fclose(pFile);
     return ST_OK;
 }
 
@@ -485,28 +483,21 @@ int findFile(FS_file_entry* pFile, uint32_t* pIndex, FS_directory_table* pDirect
     return ST_NOT_FOUND;
 }
 
-void blockCopyFromFile(FILE* pDrive, FILE* pFile, FS_allocation_unit* pUnit, uint32_t pSize) {
-    uint8_t buf[1024];
-    fseek(pDrive, FS_DATA_OFFSET + pUnit->offset, SEEK_SET);
-    while (pSize > 0) {
-        uint32_t size;
-        if (pSize > 1024) size = 1024;
-        else size = pSize;
-        fread(buf, sizeof(uint8_t), pSize, pFile);
-        fwrite(buf, sizeof(uint8_t), pSize, pDrive);
-        pSize -= size;
-    }
-}
 
-void blockCopyToFile(FILE* pDrive, FILE* pFile, FS_allocation_unit* pUnit, uint32_t pSize) {
+void blockCopy(FILE* pDrive, FILE* pFile, FS_allocation_unit* pUnit, uint32_t pSize, uint8_t pDirection) {
     uint8_t buf[1024];
     fseek(pDrive, FS_DATA_OFFSET + pUnit->offset, SEEK_SET);
     while (pSize > 0) {
         uint32_t size;
         if (pSize > 1024) size = 1024;
         else size = pSize;
-        fread(buf, sizeof(uint8_t), pSize, pDrive);
-        fwrite(buf, sizeof(uint8_t), pSize, pFile);
+        if (pDirection == FS_DIR_FROM_FILE) {
+            fread(buf, sizeof(uint8_t), pSize, pFile);
+            fwrite(buf, sizeof(uint8_t), pSize, pDrive);
+        } else if (pDirection == FS_DIR_TO_FILE) {
+            fread(buf, sizeof(uint8_t), pSize, pDrive);
+            fwrite(buf, sizeof(uint8_t), pSize, pFile);
+        }
         pSize -= size;
     }
 }
