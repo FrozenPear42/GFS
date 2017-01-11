@@ -17,10 +17,6 @@
 #define FS_DIRECTORY_OFFSET FS_ALLOCATION_OFFSET + sizeof(FS_allocation_table)
 #define FS_DATA_OFFSET FS_DIRECTORY_OFFSET + sizeof(FS_directory_table)
 
-//TODO: MOVE?
-#define FS_DIR_FROM_FILE 0x01
-#define FS_DIR_TO_FILE 0x02
-
 typedef struct {
     uint8_t magic[3];   //GFS
     uint8_t version[5]; //x.x.x
@@ -59,5 +55,10 @@ typedef struct {
     uint32_t offset_next;
 } FS_directory_table;
 
+typedef struct {
+    FS_info* info_block;
+    FS_allocation_table* allocation_table;
+    FS_directory_table* directory_table;
+} FS_descriptors;
 
 #endif //FS_DESCRIPTORS_H
