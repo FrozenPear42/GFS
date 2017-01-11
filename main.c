@@ -24,8 +24,6 @@ int createFS(FILE* pDrive, uint32_t pBytes);
 
 int addFile(FILE* pDrive, FILE* pFile, char* pFilename);
 
-int getFile(FILE* pDrive, FILE* pDest, char* pFilename);
-
 int removeFile(FILE* pDrive, char* pFile);
 
 int status(FILE* pDrive);
@@ -42,7 +40,9 @@ size_t fsize(FILE* pFile);
 
 int discardDescriptors(FS_descriptors* pDest);
 
-int findFile(FS_file_entry* pFile, uint32_t* pIndex, FS_descriptors* pDesc, char* pFilename) ;
+int findFile(FS_file_entry* pFile, uint32_t* pIndex, FS_descriptors* pDesc, char* pFilename);
+
+int getFile(FILE* pDrive, char* pDest, char* pFilename) ;
 
 int main(int argc, char** argv) {
     FILE* virtualDrive = NULL;
@@ -140,7 +140,6 @@ int main(int argc, char** argv) {
         char* virtname;
         char* destname;
         char* filename;
-        FILE* dest;
         if (argc < 5) {
             printf("Provide correct arguments:\n");
             printf("FS get <drive> <filename> <destination>\n");
@@ -150,14 +149,13 @@ int main(int argc, char** argv) {
         filename = argv[3];
         virtname = argv[2];
 
-        dest = fopen(destname, "wb");
         virtualDrive = fopen(virtname, "rb+");
 
-        if (!virtualDrive || !dest) {
+        if (!virtualDrive) {
             printf("Could not open file!\n");
             return 1;
         }
-        result = getFile(virtualDrive, dest, filename);
+        result = getFile(virtualDrive, destname, filename);
     }
 
     if (!strcmp(argv[1], "remove")) {
@@ -245,7 +243,7 @@ int addFile(FILE* pDrive, FILE* pFile, char* pFilename) {
         return ST_EXISTS;
     }
 
-    desc.info_block->size -= size;
+    desc.info_block->free -= size;
     //FIND EMPTY FILE RECORD
     for (uint32_t dir_block = 0; dir_block < desc.info_block->directory_tables; ++dir_block) {
         if (file_entry != NULL)
@@ -293,10 +291,10 @@ int addFile(FILE* pDrive, FILE* pFile, char* pFilename) {
                     uint32_t unused_unit = 0;
                     FS_allocation_unit* _unit = NULL;
                     for (; unused_block < desc.info_block->allocation_tables; ++unused_block) {
-                        if(_unit != NULL)
+                        if (_unit != NULL)
                             break;
                         for (unused_unit = 0; unused_unit < FS_ALLOC_UNITS; ++unused_unit) {
-                            if (desc.allocation_table[unused_block].units[unused_unit].type == FS_UNUSED){
+                            if (desc.allocation_table[unused_block].units[unused_unit].type == FS_UNUSED) {
                                 _unit = &desc.allocation_table[unused_block].units[unused_unit];
                                 break;
                             }
@@ -330,52 +328,48 @@ int addFile(FILE* pDrive, FILE* pFile, char* pFilename) {
     return ST_OK;
 }
 
-int getFile(FILE* pDrive, FILE* pDest, char* pFilename) {
-    FS_info header;
-    FS_directory_table table;
-    FS_allocation_table alloc;
+int getFile(FILE* pDrive, char* pDest, char* pFilename) {
+    FS_descriptors desc;
     FS_file_entry file;
+    FILE* dest;
     uint32_t block;
 
-    fread(&header, sizeof(FS_info), 1, pDrive);
-    fread(&alloc, sizeof(FS_allocation_table), 1, pDrive);
-    fread(&table, sizeof(FS_directory_table), 1, pDrive);
-
-    if (memcmp(header.magic, "GFS", 3)) {
-        fclose(pDest);
+    if (loadDescriptors(pDrive, &desc) != ST_OK) {
         return ST_NOT_VALID_FILE;
-    }
+    };
 
-    if (findFile(&file, NULL, &table, pFilename)) {
-        fclose(pDest);
+
+    if (findFile(&file, NULL, &desc, pFilename)) {
         return ST_NOT_FOUND;
     }
 
+    dest = fopen(pDest, "wb+");
     block = file.block;
     while (block != FS_ENDPOINT) {
-        blockCopy(pDrive, pDest, &alloc.units[block], alloc.units[block].size, DIR_TO_FILE);
-        block = alloc.units[block].next_block;
+        FS_allocation_unit *unit = &desc.allocation_table[block / FS_ALLOC_UNITS].units[block % FS_ALLOC_UNITS];
+        blockCopy(pDrive, dest, unit, unit->size, DIR_TO_FILE);
+        block = unit->next_block;
     }
 
-    fclose(pDest);
+    fclose(dest);
     return ST_OK;
 }
 
 int removeFile(FILE* pDrive, char* pFile) {
     FS_file_entry file;
-    uint32_t block;
     uint32_t file_idx;
     FS_descriptors desc;
 
-    loadDescriptors(pDrive, &desc);
-
+    if (loadDescriptors(pDrive, &desc) != ST_OK) {
+        return ST_NOT_VALID_FILE;
+    };
 
     if (findFile(&file, &file_idx, &desc, pFile))
         return ST_NOT_FOUND;
 
-    block = file.block;
-//    while (block != FS_ENDPOINT) {
-//        alloc.units[block].type = FS_FREE;
+    uint32_t block = file.block;
+    while (block != FS_ENDPOINT) {
+        desc.allocation_table[block / FS_ALLOC_UNITS].units[block % FS_ALLOC_UNITS].type = FS_FREE;
 //        uint32_t cnt = 0;
 //        for (uint32_t i = 0; i < FS_ALLOC_UNITS && cnt != 2; ++i) {
 //            //left block
@@ -396,14 +390,13 @@ int removeFile(FILE* pDrive, char* pFile) {
 //                    cnt += 1;
 //                }
 //            }
-//        }
-//        block = alloc.units[block].next_block;
-//    }
-    desc.directory_table[file_idx/FS_DIRECTORY_FILES].files[file_idx%FS_DIRECTORY_FILES].exists = 0;
-    desc.directory_table[file_idx/FS_DIRECTORY_FILES].files_flags &= ~(1 << file_idx%FS_DIRECTORY_FILES);
-    desc.info_block->free += file.size;
+//        }     //TODO: DEFRAG
+        block = desc.allocation_table[block / FS_ALLOC_UNITS].units[block % FS_ALLOC_UNITS].next_block;
+    }
 
-    fseek(pDrive, 0, SEEK_SET);
+    desc.directory_table[file_idx / FS_DIRECTORY_FILES].files[file_idx % FS_DIRECTORY_FILES].exists = 0;
+    desc.directory_table[file_idx / FS_DIRECTORY_FILES].files_flags &= ~(1 << file_idx % FS_DIRECTORY_FILES);
+    desc.info_block->free += file.size;
 
     saveDescriptors(pDrive, &desc);
     discardDescriptors(&desc);
@@ -571,8 +564,10 @@ void blockCopy(FILE* pDrive, FILE* pFile, FS_allocation_unit* pUnit, uint32_t pS
 
 size_t fsize(FILE* pFile) {
     size_t size;
+    fpos_t pos;
+    fgetpos(pFile, &pos);
     fseek(pFile, 0, SEEK_END);
     size = (uint32_t) ftell(pFile);
-    fseek(pFile, 0, SEEK_SET);
+    fsetpos(pFile, &pos);
     return size;
 }

@@ -1,1 +1,5 @@
-A=`cat $1 | grep MINOR | awk '{print $3}'`; B=$((A+1));sed "s/$A/$B/" $1 > tmp; cat tmp > $1;rm tmp
+A=`cat $1 | grep MINOR | awk '{print $3}'`
+B=$((A+1))
+sed "s/$A/$B/" $1 > tmp
+cat tmp > $1
+rm tmp
