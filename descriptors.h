@@ -42,11 +42,9 @@ typedef struct {
 typedef struct {
     uint8_t name[FS_MAX_NAME]; //truncated
     uint8_t flags;
-    uint8_t exists;
-    uint32_t created;
-    uint32_t last_modified;
     uint32_t size;
     uint32_t block;
+    uint64_t created;
 } FS_file_entry;
 
 typedef struct {
