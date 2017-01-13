@@ -2,7 +2,7 @@
 #define FS_DESCRIPTORS_H
 
 #define FS_MAX_NAME 32
-#define FS_ALLOC_UNITS 128
+#define FS_ALLOC_UNITS 15
 #define FS_DIRECTORY_FILES 16
 
 #define FS_FREE 0x01

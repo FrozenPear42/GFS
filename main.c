@@ -50,8 +50,9 @@ uint32_t findBlock(FS_descriptors* pDesc, uint8_t pType);
 
 uint32_t findBlockSize(FS_descriptors* pDesc, uint8_t pType, uint32_t pSize);
 
-
 uint32_t allocateSystemBlock(FS_descriptors* pDesc, uint32_t pSize);
+
+int createAllocationBlock(FS_descriptors* pDesc);
 
 int main(int argc, char** argv) {
     FILE* virtualDrive = NULL;
@@ -254,7 +255,7 @@ int addFile(FILE* pDrive, char* pFilename) {
 
     while (size != 0) {
         freeBlock = findBlock(&desc, FS_FREE);
-        if(freeBlock == FS_ENDPOINT)
+        if (freeBlock == FS_ENDPOINT)
             return ST_NOT_ENOUGH_SPACE;
 
         fsUnit = &desc.allocation_table[freeBlock / FS_ALLOC_UNITS].units[freeBlock % FS_ALLOC_UNITS];
@@ -267,22 +268,26 @@ int addFile(FILE* pDrive, char* pFilename) {
         if (fsUnit->size > size) {
             blockCopy(pDrive, file, fsUnit, size, DIR_FROM_FILE);
             uint32_t unusedBlock = findBlock(&desc, FS_UNUSED);
-            if (unusedBlock == FS_ENDPOINT)
-                return ST_NOT_ENOUGH_SPACE;
+            if (unusedBlock == FS_ENDPOINT) {
+                if (createAllocationBlock(&desc) != ST_OK)
+                    return ST_NOT_ENOUGH_SPACE;
+            unusedBlock = FS_ALLOC_UNITS * desc.info_block->allocation_tables;
+            }
 
-            FS_allocation_unit* unusedUnit = &desc.allocation_table[unusedBlock / FS_ALLOC_UNITS].units[unusedBlock % FS_ALLOC_UNITS];
+            FS_allocation_unit* unusedUnit = &desc.allocation_table[unusedBlock / FS_ALLOC_UNITS].units[unusedBlock %
+                                                                                                        FS_ALLOC_UNITS];
             unusedUnit->type = FS_FREE;
             unusedUnit->size = fsUnit->size - size;
             unusedUnit->offset = fsUnit->offset + size;
             unusedUnit->next_block = FS_ENDPOINT;
             desc.allocation_table[unusedBlock / FS_ALLOC_UNITS].unused_units -= 1;
+            fsUnit->size = size;
         } else {
             blockCopy(pDrive, file, fsUnit, fsUnit->size, DIR_FROM_FILE);
             fsUnit->type = FS_OCCUPIED;
             fsUnit->next_block = FS_ENDPOINT;
         }
         fsUnit->type = FS_OCCUPIED;
-        fsUnit->size = size;
         fsUnit->next_block = FS_ENDPOINT;
         size -= fsUnit->size;
         lastUnit = fsUnit;
@@ -405,7 +410,9 @@ int status(FILE* pDrive) {
     printf("API Version: %s\n", FS_VERSION);
 
     printf("\nINFO SECTION(OFF: 0x%02x)\n", (uint32_t) (FS_INFO_OFFSET));
-    printf("VERSION: %s\nSIZE: %d\nFREE: %d\n", version, desc.info_block->size, desc.info_block->free);
+    printf("VERSION: %s\nSIZE: %d\nFREE: %d\nALLOCATION TABLES: %d\nDIRECTORY TABLES: %d\n", version,
+           desc.info_block->size, desc.info_block->free, desc.info_block->allocation_tables,
+           desc.info_block->directory_tables);
 
     for (uint32_t i = 0; i < desc.info_block->allocation_tables; ++i) {
         printf("\nALLOCATION SECTION(OFF: 0x%02x)\n", (uint32_t) (FS_ALLOCATION_OFFSET));
@@ -413,35 +420,43 @@ int status(FILE* pDrive) {
                desc.allocation_table[i].offset_next);
     }
 
-    for (uint32_t i = 0; i < desc.info_block->allocation_tables; ++i) {
-        printf("\nDIRECTORY SECTION(OFF: 0x%02x)\n", (uint32_t) (FS_DIRECTORY_OFFSET));
-        printf("FLAGS: 0x%02x\tNEXT: %d\n", desc.directory_table[i].files_flags, desc.directory_table[i].offset_next);
+    for (uint32_t i = 0; i < desc.info_block->directory_tables; ++i) {
+        printf("\nDIRECTORY SECTION %d(OFF: 0x%02x)\n", i, (uint32_t) (FS_DIRECTORY_OFFSET));
+        printf("FLAGS: 0x%04x\tNEXT: %d\n", desc.directory_table[i].files_flags, desc.directory_table[i].offset_next);
+
+        printf("%-4s %-20s %-5s %-5s\n", "ID", "NAME", "SIZE", "BLOCK");
+
         for (uint32_t file = 0; file < FS_DIRECTORY_FILES; ++file) {
             if ((desc.directory_table[i].files_flags >> file) & 1)
-                printf("ID: %d\tNAME: %s\tSIZE: %d\tBLOCK: %d\n", file, desc.directory_table[i].files[file].name,
+                printf("%-4d %-20s %-5d %-5d\n", file, desc.directory_table[i].files[file].name,
                        desc.directory_table[i].files[file].size,
                        desc.directory_table[i].files[file].block);
         }
     }
     for (uint32_t i = 0; i < desc.info_block->allocation_tables; ++i) {
         printf("\nDATA SECTION(OFF: 0x%02x):\n", (uint32_t) (FS_DATA_OFFSET));
+        printf("%-6s %-16s %-10s %-6s %-6s\n", "TYPE", "BLOCK", "OFFSET", "SIZE", "NEXT");
         for (uint32_t unit = 0; unit < FS_ALLOC_UNITS; ++unit) {
             if (desc.allocation_table[i].units[unit].type & FS_SYSTEM) {
-                printf("SYS  BLOCK %2d[%2d, %2d]\tOFFSET: 0x%02x\tSIZE: %d\n", FS_ALLOC_UNITS * i + unit, i, unit,
+                printf("%-6s %-3d[%3d, %3d]    0x%04x   %6d\n", "SYS", FS_ALLOC_UNITS * i + unit, i, unit,
                        desc.allocation_table[i].units[unit].offset,
                        desc.allocation_table[i].units[unit].size);
 
             } else if (desc.allocation_table[i].units[unit].type & FS_FREE) {
-                printf("FREE BLOCK %2d[%2d, %2d]\tOFFSET: 0x%02x\tSIZE: %d\n", FS_ALLOC_UNITS * i + unit, i, unit,
+                printf("%-6s %-3d[%3d, %3d]    0x%04x   %6d\n", "FREE", FS_ALLOC_UNITS * i + unit, i, unit,
                        desc.allocation_table[i].units[unit].offset,
                        desc.allocation_table[i].units[unit].size);
 
             } else if (desc.allocation_table[i].units[unit].type & FS_OCCUPIED) {
-                printf("USED BLOCK %2d[%2d, %2d]\tOFFSET: 0x%02x\tSIZE: %d\tNEXT: %d\n", FS_ALLOC_UNITS * i + unit, i,
-                       unit,
-                       desc.allocation_table[i].units[unit].offset,
-                       desc.allocation_table[i].units[unit].size,
-                       desc.allocation_table[i].units[unit].next_block);
+                if (desc.allocation_table[i].units[unit].next_block != FS_ENDPOINT)
+                    printf("%-6s %-3d[%3d, %3d]    0x%04x   %6d %6d\n", "DATA", FS_ALLOC_UNITS * i + unit, i, unit,
+                           desc.allocation_table[i].units[unit].offset,
+                           desc.allocation_table[i].units[unit].size,
+                           desc.allocation_table[i].units[unit].next_block);
+                else
+                    printf("%-6s %-3d[%3d, %3d]    0x%04x   %6d\n", "DATA", FS_ALLOC_UNITS * i + unit, i, unit,
+                           desc.allocation_table[i].units[unit].offset,
+                           desc.allocation_table[i].units[unit].size);
             }
         }
     }
@@ -534,18 +549,40 @@ void blockCopy(FILE* pDrive, FILE* pFile, FS_allocation_unit* pUnit, uint32_t pS
         if (pSize > 1024) size = 1024;
         else size = pSize;
         if (pDirection == DIR_FROM_FILE) {
-            fread(buf, sizeof(uint8_t), pSize, pFile);
-            fwrite(buf, sizeof(uint8_t), pSize, pDrive);
+            fread(buf, sizeof(uint8_t), size, pFile);
+            fwrite(buf, sizeof(uint8_t), size, pDrive);
         } else if (pDirection == DIR_TO_FILE) {
-            fread(buf, sizeof(uint8_t), pSize, pDrive);
-            fwrite(buf, sizeof(uint8_t), pSize, pFile);
+            fread(buf, sizeof(uint8_t), size, pDrive);
+            fwrite(buf, sizeof(uint8_t), size, pFile);
         }
         pSize -= size;
     }
 }
 
 int createAllocationBlock(FS_descriptors* pDesc) {
+    uint32_t freeBlock = findBlockSize(pDesc, FS_FREE, sizeof(FS_allocation_table));
+    if(freeBlock == FS_ENDPOINT)
+        return ST_NOT_ENOUGH_SPACE;
 
+    memset(&pDesc->allocation_table[pDesc->info_block->allocation_tables], FS_UNUSED, sizeof(FS_allocation_table));
+
+    FS_allocation_unit* freeUnit = &pDesc->allocation_table[freeBlock/FS_ALLOC_UNITS].units[freeBlock%FS_ALLOC_UNITS];
+    FS_allocation_unit* newUnit = &pDesc->allocation_table[pDesc->info_block->allocation_tables].units[0];
+
+
+    newUnit->type = FS_FREE;
+    newUnit->size = freeUnit->size - sizeof(FS_allocation_table);
+    newUnit->next_block = FS_ENDPOINT;
+    newUnit->offset = freeUnit->offset + sizeof(FS_allocation_table);
+    freeUnit->type = FS_SYSTEM;
+    freeUnit->size = sizeof(FS_allocation_table);
+
+    printf("NEW ALLOc: %d\n", freeBlock);
+    pDesc->allocation_table[pDesc->info_block->allocation_tables].offset_next = FS_ENDPOINT;
+    pDesc->allocation_table[pDesc->info_block->allocation_tables].unused_units = FS_ALLOC_UNITS - 1;
+    pDesc->allocation_table[pDesc->info_block->allocation_tables - 1].offset_next = freeBlock;
+    pDesc->info_block->allocation_tables += 1;
+    return ST_OK;
 }
 
 int createDirectoryBlock(FS_descriptors* pDesc) {
@@ -594,6 +631,7 @@ uint32_t allocateSystemBlock(FS_descriptors* pDesc, uint32_t pSize) {
         unusedUnit->offset = unit->offset + pSize;
     }
     unit->size = pSize;
+    pDesc->info_block->free -= pSize;
     return block;
 }
 
