@@ -20,6 +20,7 @@
 #define DIR_FROM_FILE 0x01
 #define DIR_TO_FILE 0x02
 
+
 int createFS(FILE* pDrive, uint32_t pBytes);
 
 int removeFile(FILE* pDrive, char* pFile);
@@ -259,6 +260,16 @@ int addFile(FILE* pDrive, char* pFilename) {
             return ST_NOT_ENOUGH_SPACE;
 
         fsUnit = &desc.allocation_table[freeBlock / FS_ALLOC_UNITS].units[freeBlock % FS_ALLOC_UNITS];
+        if (fsUnit->size > size) {
+            if (findBlock(&desc, FS_UNUSED) == FS_ENDPOINT) {
+                if (createAllocationBlock(&desc) != ST_OK)
+                    return ST_NOT_ENOUGH_SPACE;
+                freeBlock = findBlock(&desc, FS_FREE);
+                if (freeBlock == FS_ENDPOINT)
+                    return ST_NOT_ENOUGH_SPACE;
+                fsUnit = &desc.allocation_table[freeBlock / FS_ALLOC_UNITS].units[freeBlock % FS_ALLOC_UNITS];
+            }
+        }
 
         if (lastUnit != NULL)
             lastUnit->next_block = freeBlock;
@@ -268,12 +279,6 @@ int addFile(FILE* pDrive, char* pFilename) {
         if (fsUnit->size > size) {
             blockCopy(pDrive, file, fsUnit, size, DIR_FROM_FILE);
             uint32_t unusedBlock = findBlock(&desc, FS_UNUSED);
-            if (unusedBlock == FS_ENDPOINT) {
-                if (createAllocationBlock(&desc) != ST_OK)
-                    return ST_NOT_ENOUGH_SPACE;
-            unusedBlock = FS_ALLOC_UNITS * desc.info_block->allocation_tables;
-            }
-
             FS_allocation_unit* unusedUnit = &desc.allocation_table[unusedBlock / FS_ALLOC_UNITS].units[unusedBlock %
                                                                                                         FS_ALLOC_UNITS];
             unusedUnit->type = FS_FREE;
@@ -284,9 +289,8 @@ int addFile(FILE* pDrive, char* pFilename) {
             fsUnit->size = size;
         } else {
             blockCopy(pDrive, file, fsUnit, fsUnit->size, DIR_FROM_FILE);
-            fsUnit->type = FS_OCCUPIED;
-            fsUnit->next_block = FS_ENDPOINT;
         }
+
         fsUnit->type = FS_OCCUPIED;
         fsUnit->next_block = FS_ENDPOINT;
         size -= fsUnit->size;
@@ -340,29 +344,33 @@ int removeFile(FILE* pDrive, char* pFile) {
 
     uint32_t block = file.block;
     while (block != FS_ENDPOINT) {
-        desc.allocation_table[block / FS_ALLOC_UNITS].units[block % FS_ALLOC_UNITS].type = FS_FREE;
-//        uint32_t cnt = 0;
-//        for (uint32_t i = 0; i < FS_ALLOC_UNITS && cnt != 2; ++i) {
-//            //left block
-//            if (alloc.units[block].offset == alloc.units[i].offset + alloc.units[i].size) {
-//                if (alloc.units[i].type == FS_FREE) {
-//                    alloc.units[block].type = FS_UNUSED;
-//                    alloc.unused_units += 1;
-//                    alloc.units[i].size += alloc.units[block].size;
-//                    cnt += 1;
-//                    block = i;
-//                }
-//                //right block
-//            } else if (alloc.units[block].offset + alloc.units[block].size == alloc.units[i].offset) {
-//                if (alloc.units[i].type == FS_FREE) {
-//                    alloc.units[i].type = FS_UNUSED;
-//                    alloc.unused_units += 1;
-//                    alloc.units[block].size += alloc.units[i].size;
-//                    cnt += 1;
-//                }
-//            }
-//        }     //TODO: DEFRAG
-        block = desc.allocation_table[block / FS_ALLOC_UNITS].units[block % FS_ALLOC_UNITS].next_block;
+        FS_allocation_unit* fileUnit = &desc.allocation_table[block / FS_ALLOC_UNITS].units[block % FS_ALLOC_UNITS];
+        uint8_t flag = 0;
+        fileUnit->type = FS_FREE;
+        for (uint32_t adjBlock = 0; adjBlock < desc.info_block->allocation_tables; ++adjBlock) {
+            if (flag & 0x03) break;
+            for (uint32_t adjUnit = 0; adjUnit < FS_ALLOC_UNITS; ++adjUnit) {
+                FS_allocation_unit* unit = &desc.allocation_table[adjBlock].units[adjUnit];
+                if (flag & 0x03) break;
+                if (unit->type == FS_FREE) {
+                    //LEFT:
+                    if (fileUnit->offset == unit->offset + unit->size) {
+                        fileUnit->type = FS_UNUSED;
+                        unit->size += fileUnit->size;
+                        desc.allocation_table[block / FS_ALLOC_UNITS].unused_units += 1;
+                        flag |= 0x01;
+                    }
+                    //RIGHT:
+                    if (fileUnit->offset + fileUnit->size == unit->offset) {
+                        unit->type = FS_UNUSED;
+                        fileUnit->size += unit->size;
+                        desc.allocation_table[adjBlock / FS_ALLOC_UNITS].unused_units += 1;
+                        flag |= 0x02;
+                    }
+                }
+            }
+        }
+        block = fileUnit->next_block;
     }
 
     desc.directory_table[file_idx / FS_DIRECTORY_FILES].files_flags &= ~(1 << file_idx % FS_DIRECTORY_FILES);
@@ -471,7 +479,7 @@ int findFile(FS_file_entry* pFile, uint32_t* pIndex, FS_descriptors* pDesc, char
                 if (pFile != NULL)
                     *pFile = pDesc->directory_table[block].files[file];
                 if (pIndex != NULL)
-                    *pIndex = file;
+                    *pIndex = block * FS_DIRECTORY_FILES + file;
                 return ST_OK;
             }
         }
@@ -561,12 +569,13 @@ void blockCopy(FILE* pDrive, FILE* pFile, FS_allocation_unit* pUnit, uint32_t pS
 
 int createAllocationBlock(FS_descriptors* pDesc) {
     uint32_t freeBlock = findBlockSize(pDesc, FS_FREE, sizeof(FS_allocation_table));
-    if(freeBlock == FS_ENDPOINT)
+    if (freeBlock == FS_ENDPOINT)
         return ST_NOT_ENOUGH_SPACE;
 
     memset(&pDesc->allocation_table[pDesc->info_block->allocation_tables], FS_UNUSED, sizeof(FS_allocation_table));
 
-    FS_allocation_unit* freeUnit = &pDesc->allocation_table[freeBlock/FS_ALLOC_UNITS].units[freeBlock%FS_ALLOC_UNITS];
+    FS_allocation_unit* freeUnit = &pDesc->allocation_table[freeBlock / FS_ALLOC_UNITS].units[freeBlock %
+                                                                                              FS_ALLOC_UNITS];
     FS_allocation_unit* newUnit = &pDesc->allocation_table[pDesc->info_block->allocation_tables].units[0];
 
 
