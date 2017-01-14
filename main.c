@@ -109,6 +109,12 @@ int main(int argc, char** argv){
         result = loadDescriptors(virtualDrive, &descriptors);
         if (result != ST_OK) break;
 
+        if (!strcmp(argv[1], "drop")) {
+            remove(argv[2]);
+            result = ST_OK;
+            break;
+        }
+
         if (!strcmp(argv[1], "status")) {
             if (argc < 2) {
                 printf("Provide correct arguments:\n");
@@ -167,6 +173,7 @@ int main(int argc, char** argv){
             result = removeFile(&descriptors, filename);
             break;
         }
+
     } while (0);
 
     switch (result) {
