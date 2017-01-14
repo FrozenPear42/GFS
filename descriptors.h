@@ -2,7 +2,7 @@
 #define FS_DESCRIPTORS_H
 
 #define FS_MAX_NAME 32
-#define FS_ALLOC_UNITS 16
+#define FS_ALLOC_UNITS 32
 #define FS_DIRECTORY_FILES 16
 
 #define FS_FREE 0x01
@@ -57,6 +57,7 @@ typedef struct {
     FS_info* info_block;
     FS_allocation_table* allocation_table;
     FS_directory_table* directory_table;
+    FILE* drive;
 } FS_descriptors;
 
 #endif //FS_DESCRIPTORS_H
