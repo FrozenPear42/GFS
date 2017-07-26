@@ -56,7 +56,9 @@ int getFile(FS_descriptors* pDesc, char* pDest, char* pFilename);
 
 int removeFile(FS_descriptors* pDesc, char* pFile);
 
-int main(int argc, char** argv){
+uint32_t defragBlock(FS_descriptors* pDesc, uint32_t pBlock);
+
+int main(int argc, char** argv) {
     FILE* virtualDrive = NULL;
     FS_descriptors descriptors;
     int result = 0;
@@ -86,7 +88,7 @@ int main(int argc, char** argv){
             bytes = atoi(argv[3]);
             if (virtualDrive == NULL) {
                 printf("Can not create the file!\n");
-                return  ST_CANT_OPEN;
+                return ST_CANT_OPEN;
             }
             if (bytes <= 0) {
                 printf("Size can not be negative or zero!\n");
@@ -187,7 +189,13 @@ int main(int argc, char** argv){
             printf("Specified file is not a valid file!\n");
             break;
         case ST_CANT_OPEN:
-            printf("Can not opent the file!\n");
+            printf("Can not open the file!\n");
+            break;
+        case ST_EXISTS:
+            printf("File already exists!\n");
+            break;
+        case ST_NOT_FOUND:
+            printf("File not found!\n");
             break;
         default:
             printf("Something strange happened!\n");
@@ -259,7 +267,6 @@ int addFile(FS_descriptors* pDesc, char* pFilename) {
 
     if (findFile(NULL, NULL, pDesc, pFilename) == ST_OK) {
         fclose(file);
-        printf("File with name: %s already exists!\n", pFilename);
         return ST_EXISTS;
     }
     pDesc->info_block->free -= size;
@@ -374,40 +381,27 @@ int removeFile(FS_descriptors* pDesc, char* pFile) {
     uint32_t block = file.block;
     while (block != FS_ENDPOINT) {
         FS_allocation_unit* fileUnit = &pDesc->allocation_table[block / FS_ALLOC_UNITS].units[block % FS_ALLOC_UNITS];
-        uint8_t flag = 0;
         fileUnit->type = FS_FREE;
-        for (uint32_t adjBlock = 0; adjBlock < pDesc->info_block->allocation_tables; ++adjBlock) {
-            if (flag & 0x03) break;
-            for (uint32_t adjUnit = 0; adjUnit < FS_ALLOC_UNITS; ++adjUnit) {
-                FS_allocation_unit* unit = &pDesc->allocation_table[adjBlock].units[adjUnit];
-                if (flag & 0x03) break;
-                if (unit->type == FS_FREE) {
-                    //LEFT:
-                    if (fileUnit->offset == unit->offset + unit->size) {
-                        fileUnit->type = FS_UNUSED;
-                        unit->size += fileUnit->size;
-                        pDesc->allocation_table[block / FS_ALLOC_UNITS].unused_units += 1;
-                        flag |= 0x01;
-                    }
-                    //RIGHT:
-                    if (fileUnit->offset + fileUnit->size == unit->offset) {
-                        unit->type = FS_UNUSED;
-                        fileUnit->size += unit->size;
-                        pDesc->allocation_table[adjBlock / FS_ALLOC_UNITS].unused_units += 1;
-                        flag |= 0x02;
-                    }
-                }
-            }
-        }
-        block = fileUnit->next_block;
-    }
+        while(defragBlock(pDesc, block) != FS_ENDPOINT);
+    block = fileUnit->next_block;
+}
 
-    pDesc->directory_table[file_idx / FS_DIRECTORY_FILES].files_flags &= ~(1 << file_idx % FS_DIRECTORY_FILES);
-    pDesc->info_block->free += file.size;
+pDesc->directory_table[file_idx / FS_DIRECTORY_FILES].files_flags &=
+~(1 << (file_idx % FS_DIRECTORY_FILES));
+//    if (pDesc->directory_table[file_idx / FS_DIRECTORY_FILES].files_flags == 0 && file_idx / FS_DIRECTORY_FILES > 0) {
+//        if (pDesc->directory_table[(file_idx / FS_DIRECTORY_FILES)].offset_next != FS_ENDPOINT)
+//            pDesc->directory_table[(file_idx / FS_DIRECTORY_FILES) - 1].offset_next = pDesc->directory_table[(file_idx / FS_DIRECTORY_FILES)].offset_next;
+//        pDesc->info_block->directory_tables -= 1;
+//        uint32_t offset = pDesc->directory_table[(file_idx / FS_DIRECTORY_FILES) - 1].offset_next;
+//        pDesc->directory_table[(file_idx / FS_DIRECTORY_FILES) - 1].offset_next = FS_ENDPOINT;
+//        pDesc->allocation_table[offset / FS_ALLOC_UNITS].units[offset % FS_ALLOC_UNITS].type = FS_FREE;
+//    }
 
-    saveDescriptors(pDesc);
+pDesc->info_block->free += file.
+size;
+saveDescriptors(pDesc);
 
-    return ST_OK;
+return ST_OK;
 }
 
 int tree(FS_descriptors* pDesc) {
@@ -435,19 +429,20 @@ int status(FS_descriptors* pDesc) {
     printf("GFS File System\n");
     printf("API Version: %s\n", FS_VERSION);
 
-    printf("\nINFO SECTION(OFF: 0x%02x)\n", (uint32_t) (FS_INFO_OFFSET));
+    printf("\nINFO SECTION\n");
     printf("VERSION: %s\nSIZE: %d\nFREE: %d\nALLOCATION TABLES: %d\nDIRECTORY TABLES: %d\n", version,
            pDesc->info_block->size, pDesc->info_block->free, pDesc->info_block->allocation_tables,
            pDesc->info_block->directory_tables);
 
+
     for (uint32_t i = 0; i < pDesc->info_block->allocation_tables; ++i) {
-        printf("\nALLOCATION SECTION(OFF: 0x%02x)\n", (uint32_t) (FS_ALLOCATION_OFFSET));
+        printf("\nALLOCATION SECTION %d\n", i);
         printf("UNITS: %d\tUNUSED_UNITS: %d\tNEXT: %d\n", FS_ALLOC_UNITS, pDesc->allocation_table[i].unused_units,
                pDesc->allocation_table[i].offset_next);
     }
 
     for (uint32_t i = 0; i < pDesc->info_block->directory_tables; ++i) {
-        printf("\nDIRECTORY SECTION %d(OFF: 0x%02x)\n", i, (uint32_t) (FS_DIRECTORY_OFFSET));
+        printf("\nDIRECTORY SECTION %d\n", i);
         printf("FLAGS: 0x%04x\tNEXT: %d\n", pDesc->directory_table[i].files_flags,
                pDesc->directory_table[i].offset_next);
 
@@ -461,7 +456,7 @@ int status(FS_descriptors* pDesc) {
         }
     }
     for (uint32_t i = 0; i < pDesc->info_block->allocation_tables; ++i) {
-        printf("\nDATA SECTION(OFF: 0x%02x):\n", (uint32_t) (FS_DATA_OFFSET));
+        printf("\nDATA SECTION \n");
         printf("%-6s %-16s %-10s %-6s %-6s\n", "TYPE", "BLOCK", "OFFSET", "SIZE", "NEXT");
         for (uint32_t unit = 0; unit < FS_ALLOC_UNITS; ++unit) {
             if (pDesc->allocation_table[i].units[unit].type & FS_SYSTEM) {
@@ -700,4 +695,37 @@ size_t fsize(FILE* pFile) {
     size = (uint32_t) ftell(pFile);
     fsetpos(pFile, &pos);
     return size;
+}
+
+uint32_t defragBlock(FS_descriptors* pDesc, uint32_t pBlock) {
+    uint8_t flag = 0;
+    FS_allocation_unit* fileUnit = &pDesc->allocation_table[pBlock / FS_ALLOC_UNITS].units[pBlock % FS_ALLOC_UNITS];
+    for (uint32_t adjBlock = 0; adjBlock < pDesc->info_block->allocation_tables; ++adjBlock) {
+        if (flag & 0x03) break;
+        for (uint32_t adjUnit = 0; adjUnit < FS_ALLOC_UNITS; ++adjUnit) {
+            FS_allocation_unit* unit = &pDesc->allocation_table[adjBlock].units[adjUnit];
+            if (flag & 0x03) break;
+            if (unit->type == FS_FREE) {
+                //LEFT:
+                if (fileUnit->offset == unit->offset + unit->size) {
+                    fileUnit->type = FS_UNUSED;
+                    unit->size += fileUnit->size;
+                    pDesc->allocation_table[pBlock / FS_ALLOC_UNITS].unused_units += 1;
+                    flag |= 0x01;
+                    fileUnit = unit;
+                    pBlock = adjBlock * FS_ALLOC_UNITS + adjUnit;
+                }
+                //RIGHT:
+                if (fileUnit->offset + fileUnit->size == unit->offset) {
+                    unit->type = FS_UNUSED;
+                    fileUnit->size += unit->size;
+                    pDesc->allocation_table[adjBlock / FS_ALLOC_UNITS].unused_units += 1;
+                    flag |= 0x02;
+                }
+            }
+        }
+    }
+    if (flag == 0)
+        return FS_ENDPOINT;
+    return pBlock;
 }
